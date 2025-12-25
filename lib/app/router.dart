@@ -17,6 +17,7 @@ import '../features/events/events_screen.dart';
 import '../features/chat/chat_thread_screen.dart';
 import '../features/chat/chats_screen.dart';
 import '../features/chat/create_group_screen.dart';
+import '../features/chat/chat_profile_screen.dart';
 import '../features/photos/photos_screen.dart';
 import '../features/profile/profile_screen.dart';
 import 'shell_scaffold.dart';
@@ -91,6 +92,14 @@ final routerProvider = Provider<GoRouter>((ref) {
                 path: 'thread/:id',
                 builder: (context, state) =>
                     ChatThreadScreen(threadId: state.pathParameters['id']!),
+                routes: [
+                  GoRoute(
+                    path: 'profile',
+                    builder: (context, state) => ChatProfileScreen(
+                      threadId: state.pathParameters['id']!,
+                    ),
+                  ),
+                ],
               ),
             ],
           ),

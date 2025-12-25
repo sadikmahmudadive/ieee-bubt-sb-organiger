@@ -2,11 +2,11 @@
 import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
@@ -372,7 +372,6 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen>
   bool _sending = false;
   Timer? _typingTimer;
   final _scrollController = ScrollController();
-  final _addMemberController = TextEditingController();
   bool _showJumpToLatest = false;
   double _sendScale = 1;
   ChatMessage? _replyingTo;
@@ -701,7 +700,6 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen>
     _focusNode.dispose();
     _gifSearch.dispose();
     _text.dispose();
-    _addMemberController.dispose();
     super.dispose();
   }
 
@@ -727,6 +725,28 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen>
     }
   }
 
+  void _toggleActions() {
+    if (_trayOpen) {
+      _closeTray();
+    }
+    setState(() {
+      _actionsOpen = !_actionsOpen;
+    });
+    if (_actionsOpen) {
+      _focusNode.unfocus();
+      _gifSearchFocusNode.unfocus();
+    } else {
+      _focusNode.requestFocus();
+    }
+  }
+
+  void _closeActions() {
+    if (!_actionsOpen) return;
+    setState(() {
+      _actionsOpen = false;
+    });
+  }
+
   void _closeTray() {
     if (!_trayOpen) return;
     setState(() {
@@ -738,32 +758,12 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen>
     _focusNode.requestFocus();
   }
 
-  void _toggleActions() {
-    setState(() {
-      _actionsOpen = !_actionsOpen;
-      if (_actionsOpen) {
-        _trayOpen = false;
-        _gifError = null;
-      }
-    });
-  }
-
-  void _closeActions() {
-    if (!_actionsOpen) return;
-    setState(() => _actionsOpen = false);
-  }
-
-  Future<void> _sendLike() async {
-    if (_sending) return;
-    if (ref.read(firebaseAuthProvider).currentUser == null) return;
-    await _sendMessageInternal(text: '👍', imageUrl: null);
-  }
-
   void _onGifQueryChanged() {
     if (!_trayOpen) return;
-    if (_trayTabController.index != 1) return;
+    if (_trayTabController.index != 1) return; // GIFs tab
     _gifDebounce?.cancel();
-    _gifDebounce = Timer(const Duration(milliseconds: 320), () {
+    _gifDebounce = Timer(const Duration(milliseconds: 350), () {
+      if (!mounted) return;
       final q = _gifSearch.text.trim();
       if (q.isEmpty) {
         unawaited(_loadTrendingGifs());
@@ -773,287 +773,160 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen>
     });
   }
 
-  Future<void> _loadTrendingGifs() async {
-    final key = _tenorApiKey;
-    if (key == null) {
-      setState(() {
-        _gifItems = const [];
-        _gifError = 'Add TENOR_API_KEY to .env to enable GIF search.';
-      });
-      return;
-    }
+  void _handleTextChanged() {
+    final user = ref.read(firebaseAuthProvider).currentUser;
+    if (user == null) return;
 
-    setState(() {
-      _gifLoading = true;
-      _gifError = null;
-    });
-
-    try {
-      final uri = Uri.https('tenor.googleapis.com', '/v2/featured', {
-        'key': key,
-        'client_key': 'ieee_organizer',
-        'limit': '24',
-      });
-      final items = await _fetchTenor(uri);
-      if (!mounted) return;
-      setState(() {
-        _gifItems = items;
-        _gifLoading = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _gifLoading = false;
-        _gifError = 'Could not load GIFs.';
+    _typingTimer?.cancel();
+    final isTyping = _text.text.trim().isNotEmpty;
+    unawaited(_setTyping(isTyping));
+    if (isTyping) {
+      _typingTimer = Timer(const Duration(seconds: 2), () {
+        unawaited(_setTyping(false));
       });
     }
-  }
-
-  Future<void> _searchGifs(String query) async {
-    final key = _tenorApiKey;
-    if (key == null) {
-      setState(() {
-        _gifItems = const [];
-        _gifError = 'Add TENOR_API_KEY to .env to enable GIF search.';
-      });
-      return;
-    }
-
-    setState(() {
-      _gifLoading = true;
-      _gifError = null;
-    });
-
-    try {
-      final uri = Uri.https('tenor.googleapis.com', '/v2/search', {
-        'key': key,
-        'client_key': 'ieee_organizer',
-        'q': query,
-        'limit': '24',
-      });
-      final items = await _fetchTenor(uri);
-      if (!mounted) return;
-      setState(() {
-        _gifItems = items;
-        _gifLoading = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _gifLoading = false;
-        _gifError = 'Could not search GIFs.';
-      });
-    }
-  }
-
-  Future<List<_GifItem>> _fetchTenor(Uri uri) async {
-    final resp = await http.get(uri).timeout(const Duration(seconds: 8));
-    if (resp.statusCode < 200 || resp.statusCode >= 300) {
-      throw Exception('Tenor HTTP ${resp.statusCode}');
-    }
-    final decoded = jsonDecode(resp.body);
-    if (decoded is! Map<String, dynamic>) return const [];
-    final results = decoded['results'];
-    if (results is! List) return const [];
-
-    final items = <_GifItem>[];
-    for (final r in results) {
-      if (r is! Map) continue;
-      final id = (r['id'] ?? '').toString();
-      final media = r['media_formats'];
-      if (id.isEmpty || media is! Map) continue;
-      String? pickUrl(String key) {
-        final m = media[key];
-        if (m is Map) {
-          final url = (m['url'] ?? '').toString();
-          return url.isEmpty ? null : url;
-        }
-        return null;
-      }
-
-      final preview =
-          pickUrl('tinygif') ?? pickUrl('nanogif') ?? pickUrl('gif');
-      final full = pickUrl('gif') ?? preview;
-      if (preview == null || full == null) continue;
-      items.add(_GifItem(id: id, previewUrl: preview, fullUrl: full));
-    }
-    return items;
   }
 
   void _handleScroll() {
     if (!_scrollController.hasClients) return;
-    final pos = _scrollController.position;
-    if (pos.pixels >= pos.maxScrollExtent - 120) {
-      ref
-          .read(threadMessagesControllerProvider(widget.threadId).notifier)
-          .loadMore();
-    }
-
-    final shouldShow = pos.pixels > 200;
-    if (shouldShow != _showJumpToLatest) {
-      setState(() => _showJumpToLatest = shouldShow);
-    }
+    final shouldShow = _scrollController.offset > 260;
+    if (shouldShow == _showJumpToLatest) return;
+    setState(() => _showJumpToLatest = shouldShow);
   }
 
   void _scrollToLatest() {
     if (!_scrollController.hasClients) return;
     _scrollController.animateTo(
       0,
-      duration: const Duration(milliseconds: 300),
+      duration: const Duration(milliseconds: 250),
       curve: Curves.easeOut,
     );
   }
 
-  void _handleTextChanged() {
-    _typingTimer?.cancel();
-    _typingTimer = Timer(const Duration(milliseconds: 400), () {
-      final active = _text.text.trim().isNotEmpty;
-      _setTyping(active);
-    });
+  void _startCall(String kind) {
+    if (!mounted) return;
+    final label = kind == 'video' ? 'Video call' : 'Audio call';
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('$label not implemented yet')));
   }
 
-  Future<void> _setTyping(bool isTyping) async {
-    if (!mounted) return;
+  Future<void> _setTyping(bool typing) async {
     final user = ref.read(firebaseAuthProvider).currentUser;
     if (user == null) return;
     final db = ref.read(firestoreProvider);
     await db.collection(FirestorePaths.chatThreads).doc(widget.threadId).set({
-      'typing': {user.uid: isTyping},
+      'typing.${user.uid}': typing,
     }, SetOptions(merge: true));
   }
 
   Future<void> _clearTypingOnDispose() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-    final db = FirebaseFirestore.instance;
-    await db.collection(FirestorePaths.chatThreads).doc(widget.threadId).set({
-      'typing': {user.uid: false},
-    }, SetOptions(merge: true));
+    try {
+      await _setTyping(false);
+    } catch (_) {
+      // ignore
+    }
   }
 
-  Future<void> _startCall(String type) async {
-    final cs = Theme.of(context).colorScheme;
-    final link = 'https://call.example.com/${widget.threadId}?type=$type';
+  Future<void> _loadTrendingGifs() async {
+    if (!mounted) return;
+    setState(() {
+      _gifLoading = true;
+      _gifError = null;
+    });
+    try {
+      final gifs = await _fetchTenorGifs(query: null);
+      if (!mounted) return;
+      setState(() {
+        _gifItems = gifs;
+        _gifLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _gifItems = const [];
+        _gifLoading = false;
+        _gifError = e.toString();
+      });
+    }
+  }
 
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      backgroundColor: cs.surface,
-      builder: (ctx) {
-        var muted = false;
-        var camera = type == 'video';
-        var speaker = true;
+  Future<void> _searchGifs(String query) async {
+    if (!mounted) return;
+    setState(() {
+      _gifLoading = true;
+      _gifError = null;
+    });
+    try {
+      final gifs = await _fetchTenorGifs(query: query);
+      if (!mounted) return;
+      setState(() {
+        _gifItems = gifs;
+        _gifLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _gifItems = const [];
+        _gifLoading = false;
+        _gifError = e.toString();
+      });
+    }
+  }
 
-        Future<void> shareLink() async {
-          await Clipboard.setData(ClipboardData(text: link));
-          if (!mounted) return;
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('Call link copied: $link')));
-        }
+  Future<List<_GifItem>> _fetchTenorGifs({required String? query}) async {
+    final apiKey = _tenorApiKey;
+    if (apiKey == null) {
+      throw Exception('TENOR_API_KEY missing in .env');
+    }
 
-        Future<void> startCall() async {
-          await shareLink();
-          if (ctx.mounted) Navigator.of(ctx).pop();
-        }
+    final q = (query ?? '').trim();
+    final path = q.isEmpty ? '/v2/featured' : '/v2/search';
+    final uri = Uri.https('tenor.googleapis.com', path, {
+      'key': apiKey,
+      'client_key': 'ieee_organizer',
+      'limit': '24',
+      'contentfilter': 'low',
+      if (q.isNotEmpty) 'q': q,
+    });
 
-        return StatefulBuilder(
-          builder: (context, setState) {
-            return SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    CircleAvatar(
-                      radius: 32,
-                      backgroundColor: cs.primaryContainer,
-                      child: Icon(
-                        type == 'video' ? Icons.videocam : Icons.call,
-                        color: cs.onPrimaryContainer,
-                        size: 28,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      type == 'video'
-                          ? 'Start a video call'
-                          : 'Start a voice call',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      'Share the link or jump straight in. Controls stay here while you call.',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: cs.onSurfaceVariant,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Wrap(
-                      alignment: WrapAlignment.center,
-                      spacing: 14,
-                      runSpacing: 10,
-                      children: [
-                        _CallToggle(
-                          icon: muted ? Icons.mic_off : Icons.mic,
-                          label: muted ? 'Muted' : 'Mic',
-                          active: muted,
-                          onTap: () => setState(() => muted = !muted),
-                        ),
-                        _CallToggle(
-                          icon: speaker ? Icons.volume_up : Icons.volume_mute,
-                          label: speaker ? 'Speaker' : 'Earpiece',
-                          active: speaker,
-                          onTap: () => setState(() => speaker = !speaker),
-                        ),
-                        _CallToggle(
-                          icon: camera ? Icons.videocam : Icons.videocam_off,
-                          label: camera ? 'Camera' : 'Camera off',
-                          active: camera,
-                          onTap: () => setState(() => camera = !camera),
-                        ),
-                        _CallToggle(
-                          icon: Icons.message_outlined,
-                          label: 'Chat',
-                          active: false,
-                          onTap: () => Navigator.of(ctx).pop(),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    SizedBox(
-                      width: double.infinity,
-                      child: FilledButton.icon(
-                        icon: Icon(
-                          type == 'video' ? Icons.videocam : Icons.call,
-                        ),
-                        onPressed: startCall,
-                        label: Text(
-                          type == 'video'
-                              ? 'Start video call'
-                              : 'Start voice call',
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        icon: const Icon(Icons.link),
-                        onPressed: shareLink,
-                        label: const Text('Copy invite link'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
+    final resp = await http.get(uri).timeout(const Duration(seconds: 8));
+    if (resp.statusCode != 200) {
+      throw Exception('Tenor error (${resp.statusCode})');
+    }
+
+    final decoded = jsonDecode(resp.body);
+    final results = (decoded is Map<String, dynamic>)
+        ? (decoded['results'] as List?)
+        : null;
+    if (results == null) return const [];
+
+    String? _urlFor(Map<String, dynamic>? mf, String key) {
+      final v = mf?[key];
+      if (v is Map<String, dynamic>) {
+        final u = v['url'];
+        if (u is String && u.isNotEmpty) return u;
+      }
+      return null;
+    }
+
+    final items = <_GifItem>[];
+    for (final r in results) {
+      if (r is! Map<String, dynamic>) continue;
+      final id = (r['id'] ?? '').toString();
+      final mf = r['media_formats'] is Map
+          ? (r['media_formats'] as Map).cast<String, dynamic>()
+          : null;
+
+      final preview =
+          _urlFor(mf, 'tinygif') ??
+          _urlFor(mf, 'nanogif') ??
+          _urlFor(mf, 'gif');
+      final full = _urlFor(mf, 'gif') ?? _urlFor(mf, 'mediumgif') ?? preview;
+      if (id.isEmpty || preview == null || full == null) continue;
+      items.add(_GifItem(id: id, previewUrl: preview, fullUrl: full));
+    }
+    return items;
   }
 
   String _dayLabel(DateTime day) {
@@ -1353,6 +1226,10 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen>
     await _sendMessageInternal(text: text, imageUrl: null);
   }
 
+  Future<void> _sendLike() async {
+    await _sendMessageInternal(text: '👍', imageUrl: null);
+  }
+
   void _insertSnippet(String value) {
     final selection = _text.selection;
     final baseText = _text.text;
@@ -1546,294 +1423,6 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen>
     }
   }
 
-  Future<void> _addMember(String input) async {
-    final user = ref.read(firebaseAuthProvider).currentUser;
-    if (user == null) return;
-    final raw = input.trim();
-    if (raw.isEmpty) return;
-    final db = ref.read(firestoreProvider);
-
-    String? targetUid;
-    final emailQuery = await db
-        .collection(FirestorePaths.users)
-        .where('email', isEqualTo: raw)
-        .limit(1)
-        .get();
-    if (emailQuery.docs.isNotEmpty) {
-      targetUid = emailQuery.docs.first.id;
-    } else {
-      targetUid = raw; // assume UID
-    }
-
-    await db.collection(FirestorePaths.chatThreads).doc(widget.threadId).set({
-      'memberUids': FieldValue.arrayUnion([targetUid]),
-      'lastMessageAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-  }
-
-  Future<void> _removeMember(String uid) async {
-    final db = ref.read(firestoreProvider);
-    await db.collection(FirestorePaths.chatThreads).doc(widget.threadId).set({
-      'memberUids': FieldValue.arrayRemove([uid]),
-    }, SetOptions(merge: true));
-  }
-
-  Future<void> _showMembersSheet(ChatThread thread, String? myUid) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (ctx) {
-        var busy = false;
-        _addMemberController.clear();
-        return StatefulBuilder(
-          builder: (context, setState) {
-            return SafeArea(
-              child: Padding(
-                padding: EdgeInsets.only(
-                  left: 16,
-                  right: 16,
-                  bottom: MediaQuery.viewInsetsOf(context).bottom + 16,
-                  top: 12,
-                ),
-                child: SingleChildScrollView(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        'Members',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 12),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          for (final uid in thread.memberUids)
-                            Consumer(
-                              builder: (context, ref, _) {
-                                final profile = ref.watch(
-                                  userProfileProvider(uid),
-                                );
-                                final name = profile.maybeWhen(
-                                  data: (p) =>
-                                      (p?.displayName.isNotEmpty ?? false)
-                                      ? p!.displayName
-                                      : uid,
-                                  orElse: () => uid,
-                                );
-                                final url = profile.maybeWhen(
-                                  data: (p) => p?.photoUrl,
-                                  orElse: () => null,
-                                );
-                                return InputChip(
-                                  label: Text(name),
-                                  avatar: CircleAvatar(
-                                    backgroundImage:
-                                        (url == null || url.isEmpty)
-                                        ? null
-                                        : NetworkImage(url),
-                                    child: (url == null || url.isEmpty)
-                                        ? const Icon(Icons.person, size: 16)
-                                        : null,
-                                  ),
-                                  onDeleted: (myUid != null && uid != myUid)
-                                      ? () async {
-                                          setState(() => busy = true);
-                                          await _removeMember(uid);
-                                          setState(() => busy = false);
-                                        }
-                                      : null,
-                                );
-                              },
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      TextField(
-                        controller: _addMemberController,
-                        decoration: const InputDecoration(
-                          labelText: 'Add member by email or UID',
-                          prefixIcon: Icon(Icons.person_add_alt),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      SizedBox(
-                        width: double.infinity,
-                        child: FilledButton.icon(
-                          onPressed: busy
-                              ? null
-                              : () async {
-                                  setState(() => busy = true);
-                                  try {
-                                    await _addMember(_addMemberController.text);
-                                    _addMemberController.clear();
-                                  } finally {
-                                    setState(() => busy = false);
-                                  }
-                                },
-                          icon: const Icon(Icons.person_add_alt_1),
-                          label: const Text('Add member'),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Future<void> _showGroupEditSheet(ChatThread thread) async {
-    if (!thread.isGroup) return;
-    final nameController = TextEditingController(text: thread.name ?? '');
-    final picker = ImagePicker();
-    var busy = false;
-    String? workingUrl = thread.photoUrl;
-
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (context, setState) {
-            Future<void> save() async {
-              setState(() => busy = true);
-              try {
-                final db = ref.read(firestoreProvider);
-                await db
-                    .collection(FirestorePaths.chatThreads)
-                    .doc(widget.threadId)
-                    .set({
-                      'name': nameController.text.trim().isEmpty
-                          ? null
-                          : nameController.text.trim(),
-                      'photoUrl': workingUrl,
-                    }, SetOptions(merge: true));
-                if (ctx.mounted) Navigator.of(ctx).pop();
-              } finally {
-                setState(() => busy = false);
-              }
-            }
-
-            Future<void> pickImage() async {
-              final file = await picker.pickImage(
-                source: ImageSource.gallery,
-                maxWidth: 1200,
-                maxHeight: 1200,
-                imageQuality: 70,
-              );
-              if (file == null) return;
-              setState(() => busy = true);
-              try {
-                final bytes = await file.readAsBytes();
-                final storageRef = FirebaseStorage.instance.ref().child(
-                  'group_avatars/${widget.threadId}.jpg',
-                );
-                final uploadTask = await storageRef.putData(
-                  bytes,
-                  SettableMetadata(contentType: 'image/jpeg'),
-                );
-                workingUrl = await uploadTask.ref.getDownloadURL();
-                setState(() {});
-              } finally {
-                setState(() => busy = false);
-              }
-            }
-
-            return SafeArea(
-              child: Padding(
-                padding: EdgeInsets.only(
-                  left: 16,
-                  right: 16,
-                  bottom: MediaQuery.viewInsetsOf(context).bottom + 16,
-                  top: 12,
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Edit group',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        CircleAvatar(
-                          radius: 32,
-                          backgroundImage:
-                              (workingUrl == null || workingUrl!.isEmpty)
-                              ? null
-                              : NetworkImage(workingUrl!),
-                          child: (workingUrl == null || workingUrl!.isEmpty)
-                              ? const Icon(Icons.groups, size: 32)
-                              : null,
-                        ),
-                        const SizedBox(width: 16),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            FilledButton.icon(
-                              onPressed: busy ? null : pickImage,
-                              icon: const Icon(
-                                Icons.photo_camera_back_outlined,
-                              ),
-                              label: const Text('Change photo'),
-                            ),
-                            const SizedBox(height: 8),
-                            TextButton.icon(
-                              onPressed: busy
-                                  ? null
-                                  : () {
-                                      setState(() => workingUrl = null);
-                                    },
-                              icon: const Icon(Icons.delete_outline),
-                              label: const Text('Remove photo'),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    TextField(
-                      controller: nameController,
-                      decoration: const InputDecoration(
-                        labelText: 'Group name',
-                        prefixIcon: Icon(Icons.badge_outlined),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    SizedBox(
-                      width: double.infinity,
-                      child: FilledButton(
-                        onPressed: busy ? null : save,
-                        child: busy
-                            ? const SizedBox(
-                                height: 18,
-                                width: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Text('Save changes'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final threadAsync = ref.watch(threadProvider(widget.threadId));
@@ -1864,30 +1453,23 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen>
             title: threadAsync.maybeWhen(
               data: (t) => t == null
                   ? const Text('Chat')
-                  : _ThreadHeader(thread: t, myUid: myUid),
+                  : GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => context.push(
+                        '/chats/thread/${widget.threadId}/profile',
+                      ),
+                      child: _ThreadHeader(
+                        thread: t,
+                        myUid: myUid,
+                        subtitleOverride: 'Messenger',
+                      ),
+                    ),
               orElse: () => const Text('Chat'),
             ),
             actions: [
               threadAsync.maybeWhen(
                 data: (t) {
                   if (t == null) return const SizedBox.shrink();
-                  if (t.isGroup) {
-                    return Row(
-                      children: [
-                        IconButton(
-                          tooltip: 'Members',
-                          icon: const Icon(Icons.group_outlined),
-                          onPressed: () => _showMembersSheet(t, myUid),
-                        ),
-                        IconButton(
-                          tooltip: 'Edit group',
-                          icon: const Icon(Icons.edit_outlined),
-                          onPressed: () => _showGroupEditSheet(t),
-                        ),
-                      ],
-                    );
-                  }
-
                   return Row(
                     children: [
                       IconButton(
@@ -3080,57 +2662,6 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen>
   }
 }
 
-class _CallToggle extends StatelessWidget {
-  const _CallToggle({
-    required this.icon,
-    required this.label,
-    required this.active,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String label;
-  final bool active;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        decoration: BoxDecoration(
-          color: active ? cs.primaryContainer : cs.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: active ? cs.primary : cs.outlineVariant,
-            width: 1,
-          ),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              icon,
-              size: 20,
-              color: active ? cs.onPrimaryContainer : cs.onSurfaceVariant,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              label,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: active ? cs.onPrimaryContainer : cs.onSurfaceVariant,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _StatusTicks extends StatelessWidget {
   const _StatusTicks({
     required this.timeLabel,
@@ -3233,10 +2764,15 @@ class _BubbleTailPainter extends CustomPainter {
 }
 
 class _ThreadHeader extends ConsumerWidget {
-  const _ThreadHeader({required this.thread, required this.myUid});
+  const _ThreadHeader({
+    required this.thread,
+    required this.myUid,
+    this.subtitleOverride,
+  });
 
   final ChatThread thread;
   final String? myUid;
+  final String? subtitleOverride;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -3289,6 +2825,11 @@ class _ThreadHeader extends ConsumerWidget {
     final style = Theme.of(context).textTheme.labelSmall?.copyWith(
       color: Theme.of(context).colorScheme.onSurfaceVariant,
     );
+
+    if (subtitleOverride != null && subtitleOverride!.isNotEmpty) {
+      return Text(subtitleOverride!, style: style);
+    }
+
     if (t.isGroup && t.memberUids.isNotEmpty) {
       return Text('${t.memberUids.length} members', style: style);
     }
