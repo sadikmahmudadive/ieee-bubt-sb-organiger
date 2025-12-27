@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
@@ -11,7 +13,10 @@ class NotificationService {
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
 
-  Future<void> initialize() async {
+  FutureOr<void> Function(String?)? _onSelect;
+
+  Future<void> initialize({FutureOr<void> Function(String?)? onSelect}) async {
+    _onSelect = onSelect;
     // This app currently configures local notifications only for Android.
     // On Windows/macOS/Linux/iOS/web we skip initialization to avoid
     // platform-specific configuration errors.
@@ -20,9 +25,22 @@ class NotificationService {
     }
 
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const initSettings = InitializationSettings(android: androidInit);
+    final initSettings = InitializationSettings(android: androidInit);
 
-    await _plugin.initialize(initSettings);
+    await _plugin.initialize(
+      initSettings,
+      onDidReceiveNotificationResponse: (response) async {
+        await _onSelect?.call(response.payload);
+      },
+    );
+
+    // Handle notification tap that launched the app from a terminated state.
+    final launchDetails = await _plugin.getNotificationAppLaunchDetails();
+    final launchedFromNotification = launchDetails?.didNotificationLaunchApp;
+    final launchPayload = launchDetails?.notificationResponse?.payload;
+    if (launchedFromNotification == true && launchPayload != null) {
+      await _onSelect?.call(launchPayload);
+    }
 
     await _plugin
         .resolvePlatformSpecificImplementation<
@@ -42,6 +60,20 @@ class NotificationService {
           AndroidFlutterLocalNotificationsPlugin
         >()
         ?.createNotificationChannel(androidChannel);
+
+    const callsChannel = AndroidNotificationChannel(
+      'calls',
+      'Call alerts',
+      description: 'Incoming and outgoing call notifications',
+      importance: Importance.max,
+      playSound: true,
+    );
+
+    await _plugin
+        .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin
+        >()
+        ?.createNotificationChannel(callsChannel);
   }
 
   Future<void> scheduleReminder({
@@ -78,5 +110,35 @@ class NotificationService {
       return Future.value();
     }
     return _plugin.cancel(id);
+  }
+
+  Future<void> showCallAlert({
+    required String title,
+    required String body,
+    int id = 1001,
+    String? payload,
+  }) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+
+    await _plugin.show(
+      id,
+      title,
+      body,
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'calls',
+          'Call alerts',
+          importance: Importance.max,
+          priority: Priority.max,
+          category: AndroidNotificationCategory.call,
+          visibility: NotificationVisibility.public,
+          playSound: true,
+          fullScreenIntent: true,
+        ),
+      ),
+      payload: payload,
+    );
   }
 }

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest.dart' as tz;
 
@@ -10,6 +12,7 @@ import 'setup_required_screen.dart';
 import '../services/notification_service.dart';
 import '../firebase_options.dart';
 import '../providers.dart';
+import '../services/push_service.dart';
 
 class Bootstrap extends StatefulWidget {
   const Bootstrap({super.key});
@@ -28,10 +31,12 @@ class _BootstrapState extends State<Bootstrap> {
   }
 
   Future<_BootstrapResult> _init() async {
+    debugPrint('Bootstrap: start');
     WidgetsFlutterBinding.ensureInitialized();
 
     try {
       final prefs = await SharedPreferences.getInstance();
+      debugPrint('Bootstrap: prefs ready');
 
       try {
         await dotenv.load(fileName: '.env');
@@ -40,14 +45,27 @@ class _BootstrapState extends State<Bootstrap> {
       }
 
       tz.initializeTimeZones();
-      await NotificationService.instance.initialize();
+      await NotificationService.instance.initialize(
+        onSelect: PushService.instance.handleNotificationTap,
+      );
+      debugPrint('Bootstrap: notifications ready');
 
       try {
         await Firebase.initializeApp(
           options: DefaultFirebaseOptions.currentPlatform,
         );
+        debugPrint(
+          'Firebase initialized OK for ${DefaultFirebaseOptions.currentPlatform.appId}',
+        );
+        await PushService.instance.initialize(
+          auth: FirebaseAuth.instance,
+          db: FirebaseFirestore.instance,
+        );
+        debugPrint('PushService initialized');
         return _BootstrapResult(firebaseReady: true, prefs: prefs);
       } catch (e, st) {
+        debugPrint('Firebase init failed: $e');
+        debugPrint('$st');
         return _BootstrapResult(
           firebaseReady: false,
           prefs: prefs,
@@ -56,6 +74,8 @@ class _BootstrapState extends State<Bootstrap> {
         );
       }
     } catch (e, st) {
+      debugPrint('Bootstrap failed early: $e');
+      debugPrint('$st');
       return _BootstrapResult(
         firebaseReady: false,
         prefs: null,

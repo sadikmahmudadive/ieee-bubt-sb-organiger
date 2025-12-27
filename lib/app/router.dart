@@ -18,14 +18,18 @@ import '../features/chat/chat_thread_screen.dart';
 import '../features/chat/chats_screen.dart';
 import '../features/chat/create_group_screen.dart';
 import '../features/chat/chat_profile_screen.dart';
+import '../features/chat/call_screen.dart';
 import '../features/photos/photos_screen.dart';
 import '../features/profile/profile_screen.dart';
 import 'shell_scaffold.dart';
+
+final rootNavigatorKey = GlobalKey<NavigatorState>();
 
 final routerProvider = Provider<GoRouter>((ref) {
   final authStream = ref.watch(firebaseAuthProvider).authStateChanges();
 
   return GoRouter(
+    navigatorKey: rootNavigatorKey,
     initialLocation: '/',
     refreshListenable: GoRouterRefreshStream(authStream),
     redirect: (context, state) {
@@ -97,6 +101,13 @@ final routerProvider = Provider<GoRouter>((ref) {
                     path: 'profile',
                     builder: (context, state) => ChatProfileScreen(
                       threadId: state.pathParameters['id']!,
+                    ),
+                  ),
+                  GoRoute(
+                    path: 'call/:type',
+                    builder: (context, state) => CallScreen(
+                      threadId: state.pathParameters['id']!,
+                      type: state.pathParameters['type'] ?? 'audio',
                     ),
                   ),
                 ],

@@ -44,6 +44,10 @@ dependencies:
   firebase_auth: ^6.1.0
   cloud_firestore: ^6.0.0
   firebase_storage: ^13.0.5
+  firebase_messaging: ^16.1.0
+
+  # Realtime media
+  flutter_webrtc: ^1.2.1
 
   # Auth providers
   google_sign_in: ^7.1.1
@@ -58,6 +62,9 @@ dependencies:
   flutter_local_notifications: ^19.4.1
   timezone: ^0.10.1
   intl: ^0.20.2
+
+  # Call alerts
+  flutter_ringtone_player: ^4.0.0
 
   # Utils
   uuid: ^4.5.1

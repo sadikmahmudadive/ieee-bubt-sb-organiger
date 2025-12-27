@@ -805,10 +805,7 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen>
 
   void _startCall(String kind) {
     if (!mounted) return;
-    final label = kind == 'video' ? 'Video call' : 'Audio call';
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('$label not implemented yet')));
+    context.push('/chats/thread/${widget.threadId}/call/$kind');
   }
 
   Future<void> _setTyping(bool typing) async {
@@ -901,7 +898,7 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen>
         : null;
     if (results == null) return const [];
 
-    String? _urlFor(Map<String, dynamic>? mf, String key) {
+    String? urlFor(Map<String, dynamic>? mf, String key) {
       final v = mf?[key];
       if (v is Map<String, dynamic>) {
         final u = v['url'];
@@ -919,10 +916,8 @@ class _ChatThreadScreenState extends ConsumerState<ChatThreadScreen>
           : null;
 
       final preview =
-          _urlFor(mf, 'tinygif') ??
-          _urlFor(mf, 'nanogif') ??
-          _urlFor(mf, 'gif');
-      final full = _urlFor(mf, 'gif') ?? _urlFor(mf, 'mediumgif') ?? preview;
+          urlFor(mf, 'tinygif') ?? urlFor(mf, 'nanogif') ?? urlFor(mf, 'gif');
+      final full = urlFor(mf, 'gif') ?? urlFor(mf, 'mediumgif') ?? preview;
       if (id.isEmpty || preview == null || full == null) continue;
       items.add(_GifItem(id: id, previewUrl: preview, fullUrl: full));
     }

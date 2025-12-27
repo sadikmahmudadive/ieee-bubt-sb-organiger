@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+// Google Sign-In handled via FirebaseAuth's provider flows.
 
 import '../../providers.dart';
 import '../../services/firestore_paths.dart';
@@ -43,7 +44,9 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
     });
 
     try {
-      await ref.read(firebaseAuthProvider).signInWithEmailAndPassword(
+      await ref
+          .read(firebaseAuthProvider)
+          .signInWithEmailAndPassword(
             email: _email.text.trim(),
             password: _password.text,
           );
@@ -73,15 +76,14 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
     try {
       final auth = ref.read(firebaseAuthProvider);
 
+      final provider = GoogleAuthProvider();
+      provider.setCustomParameters({'prompt': 'select_account'});
+
+      // Web uses popup; other platforms use the OAuth provider flow.
       if (kIsWeb) {
-        final provider = GoogleAuthProvider();
-        provider.setCustomParameters({'prompt': 'select_account'});
         await auth.signInWithPopup(provider);
       } else {
-        setState(() {
-          _error = 'Google sign-in is not available on this build.';
-        });
-        return;
+        await auth.signInWithProvider(provider);
       }
 
       final user = auth.currentUser;
@@ -186,12 +188,14 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
                             hintText: 'Password',
                             prefixIcon: const Icon(Icons.lock_outline_rounded),
                             suffixIcon: IconButton(
-                              tooltip: _obscure ? 'Show password' : 'Hide password',
+                              tooltip: _obscure
+                                  ? 'Show password'
+                                  : 'Hide password',
                               onPressed: _busy
                                   ? null
                                   : () => setState(() {
-                                        _obscure = !_obscure;
-                                      }),
+                                      _obscure = !_obscure;
+                                    }),
                               icon: Icon(
                                 _obscure
                                     ? Icons.visibility_outlined
@@ -211,8 +215,8 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
                             onPressed: _busy
                                 ? null
                                 : () => context.go(
-                                      '/auth/forgot-password?from=$encodedFrom',
-                                    ),
+                                    '/auth/forgot-password?from=$encodedFrom',
+                                  ),
                             child: const Text('Forgot your password?'),
                           ),
                         ),
@@ -273,8 +277,8 @@ class _SignInScreenState extends ConsumerState<SignInScreen> {
                               onPressed: _busy
                                   ? null
                                   : () => context.go(
-                                        '/auth/register?from=$encodedFrom',
-                                      ),
+                                      '/auth/register?from=$encodedFrom',
+                                    ),
                               child: const Text('Create one'),
                             ),
                           ],
